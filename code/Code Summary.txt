@@ -1,0 +1,87 @@
+数据集：Chatbot Arena的对话数据集
+训练集数据样本共有57477个，每个样本即为一个用户提问得到两种不同LLM模型的应答。划分20%的比赛数据集作为训练验证集。
+
+评估指标
+log_loss：衡量模型预测的概率分布与真实标签的匹配程度，越小越好 对数损失函数 主要是这个
+accuracy：衡量模型预测的准确性，越高越好 
+
+（一）Gemma-2 9b it 4-bit QLoRA
+
+1.Lora
+相关配置参数
+r：Lora 插入的低秩矩阵的秩，表示矩阵的列数。较小的 r 值可以减少训练时的计算量。
+lora_alpha：缩放因子，影响Lora的权重更新幅度。
+target_modules：对指定的模型进行Lora处理，如Self-attation中的q_proj、k_proj、v_proj模块
+freeze_layers：模型冻结层数，Gemma-2 9b模型共42层
+lora_dropout：dropout技术，一般设置为0.1
+
+本次比赛设置如下：
+max_length = 1536
+lr = 8e-5
+freeze_layers = 2
+lora_r = 32
+lora_alpha = 64
+lora_dropout = 0.0
+target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+2.数据处理
+  数据格式
+  ①输入数据包含 prompt、response_a 和 response_b 三部分，分别代表模型的输入提示和两个模型的输出结果
+  ②winner_model_a 和 winner_model_b 是二分类标签，表示哪个模型生成的 response 更优。如果 winner_model_a 为 True，则标签为 0，表示模型 A 的输出较好；winner_model_b 为 True 时标签为 1，否则标签为 2，表示两者都不优。（二元分类信息变成三分类标签）
+
+3.分词器处理步骤
+   ①首先，process_text 函数会对输入的 prompt 和 response 进行处理，确保它们格式化成干净的文本（处理文本）
+   ②将 prompt、response_a 和 response_b 拼接成一个完整的上下文输入，作为模型的输入数据（拼接）
+   ③使用 self.tokenizer 对文本进行分词，并将结果限制在 max_length 内，超出长度的部分会被截断（分词）
+   ④根据 winner_model_a 和 winner_model_b 的结果生成分类标签（生成标签）
+4.训练参数
+直接调用Hugging Face 的 Trainer 类，简化模型训练过程。
+
+
+（二）Llama-3.1-8B-Instruct LoRA
+
+1.Lora
+本次比赛设置如下：
+MAX_LENGTH = 1280
+LR_MAX = 1.2e-4 
+FREEZE = 2
+LORA_RANK = 32
+LORA_ALPHA = 32
+DROPOUT = 0.0
+LORA_MODULES = ["q_proj", 'o_proj', 'v_proj', "k_proj"]
+
+2.模型分片与分布式训练
+Mesh 分片: 用TPU以 mesh 的形式进行分片，将模型和数据分布到不同的 TPU 核心上进行并行训练。定义了一个 3D 的 mesh 分片结构 
+(1, num_devices, 1)，分别表示数据并行、完全分布式训练，和模型并行。
+
+3.优化器与学习率调度
+①优化器：AdamW 优化器， Adam 优化器的变种，带有权重衰减机制，可以防止过拟合。
+②余弦退火学习率调度器：使用Hugging Face 的 get_cosine_schedule_with_warmup 函数来设置学习率调度器。它的学习率曲线呈现余弦退火形状，先热身，然后逐渐下降。这种学习率策略在训练大模型时常用，能够平稳地降低学习率，避免模型陷入局部最优。
+
+4.训练循环
+①前向传播: 将输入数据传入模型，得到预测的 logits 分数。
+②损失计算: 使用交叉熵损失函数 计算模型的预测与真实标签之间的误差。
+③反向传播与优化: loss.backward() 进行反向传播，计算梯度。xm.optimizer_step(OPTIMIZER) 用于在 TPU 上执行优化步骤，更新模型的权重。
+④学习率更新: 每步训练后，调用 lr_scheduler.step() 更新学习率。
+⑤状态打印: 每 200 步打印一次当前的损失和准确率，帮助跟踪模型的训练状态。
+
+（三）模型推理
+Gemma-2推理 
+1.TTA 数据增强
+提高模型推理性能的技术，通过对输入数据进行变换（如交换模型A和B的响应）来生成额外的推理结果，从而提高模型的稳健性
+①aug_data：创建了一个新的数据集，它和test的区别在于交换了response_a和response_b，即模型A的响应和模型B的响应位置对调
+②apply(len)：计算每个输入序列的长度，并将其保存到length列中
+2.混合精度推理
+使用16-bit和32-bit混合精度来加速推理并节省显存
+3.禁用梯度计算
+推理阶段不需要反向传播，可以减少内存并提高推理速度
+4.多线程推理
+创建两个线程分别使用model_0和model_1进行推理，并将两个线程推理结果拼接在一起
+
+Llama3.1推理
+与Gemma-2相似，区别不大。
+
+融合两个模型的推理结果，并将融合后的结果保存到一个新的CSV文件
+
+加权平均：对两个模型各自的输出结果进行加权平均。权重分别为gemma2模型的权重为70%，llama模型的权重为30%。7：3
+p1['winner_model_a']*0.7 + p2['winner_model_a']*0.3
