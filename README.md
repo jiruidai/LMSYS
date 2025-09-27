@@ -1,2 +1,3 @@
 # Kaggle-LMSYS
 This competition challenges participants to predict which responses users will prefer in a head-to-head match between chatbots powered by large language models (LLMs). Participants are given a dataset of conversations from Chatbot Arena, where different LLMs generate responses to user questions. By developing successful machine learning models, participants can help improve how chatbots interact with humans and ensure they better align with human preferences.
+<img width="4800" height="2960" alt="Kenmook - LMSYS - Chatbot Arena Human Preference Predictions" src="https://github.com/user-attachments/assets/f7958c80-8668-4494-a985-80fdf8fa1e4d" />
